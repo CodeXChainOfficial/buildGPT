@@ -2,9 +2,12 @@ import logging
 import os
 import signal
 import sys
-
+import traceback
+import subprocess
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit.components.v1 import html
+import socket
 
 current_file_path = os.path.abspath(__file__)
 current_directory = os.path.dirname(current_file_path)
@@ -43,6 +46,33 @@ def initCode():
         st.session_state.edit_mode = False
 
 
+def save_code_to_file(code, filename='generated_file.py'):
+    with open(filename, 'w') as file:
+        file.write(code)
+    st.success(f'Code saved to {filename}')
+    return filename
+
+def run_code_file(filename):
+    try:
+        # This will set up the subprocess to run the streamlit app, capturing the output.
+        # The `check` argument if set to True will raise a CalledProcessError if the command returns a non-zero exit status.
+        # Note that if running this command succeeds, it will not terminate until the streamlit app is closed.
+        result = subprocess.run(['streamlit', 'run', filename], capture_output=True, text=True, check=True)
+        stdout = result.stdout
+        stderr = result.stderr
+        return stdout, stderr
+    except subprocess.CalledProcessError as e:
+        # Handle errors during subprocess run.
+        st.error(f'An error occurred: {e}')
+        return e.stdout, e.stderr
+
+
+def get_open_app_script(ip_address, port):
+    return f"""
+    <script>
+    window.open('http://{ip_address}:{port}/', '_blank');
+    </script>
+    """
 # Page title
 title = "🧩 DemoGPT"
 
@@ -55,18 +85,8 @@ initCode()
 
 # Text input
 
-openai_api_key = st.sidebar.text_input(
-    "OpenAI API Key",
-    placeholder="sk-...",
-    value=os.getenv("OPENAI_API_KEY", ""),
-    type="password",
-)
-
-openai_api_base = st.sidebar.text_input(
-    "Open AI base URL",
-    placeholder="https://api.openai.com/v1",
-)
-
+openai_api_key = "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"
+openai_api_base = "https://api.openai.com/v1"
 models = (
     "gpt-3.5-turbo-0613",
     "gpt-3.5-turbo-0301",
@@ -135,22 +155,16 @@ if submitted:
     if not demo_idea:
         st.warning("Please enter your demo idea", icon="⚠️")
         st.stop()
-        
+
     st.session_state.messages = []
     if not openai_api_key:
         st.warning("Please enter your OpenAI API Key!", icon="⚠️")
     elif demo_idea:
         bar = progressBar(0)
         st.session_state.container = st.container()
-        try:
+        try:  # This line must be aligned with its corresponding except block
             agent = DemoGPT(openai_api_key=openai_api_key, openai_api_base=openai_api_base)
             agent.setModel(model_name)
-        except Exception as e:
-            st.warning(e)
-        else:
-            kill()
-            code_empty = st.empty()
-            st.session_state.container = st.container()
             for data in generate_response(demo_idea):
                 done = data.get("done", False)
                 failed = data.get("failed", False)
@@ -170,38 +184,66 @@ if submitted:
 
                 st.info(message, icon="🧩")
                 st.session_state.messages.append(message)
+        except Exception as e:  # This line must be at the same indentation level as the try block
+            error_message = traceback.format_exc()
+            st.error(f"An error occurred: {error_message}")
+            logging.error(error_message)
+            st.session_state["done"] = True
+            st.session_state["failed"] = True
 
 elif "messages" in st.session_state:
     for message in st.session_state.messages:
         st.info(message, icon="🧩")
 
-if st.session_state.done:
+if 'filename' not in st.session_state:
+    st.session_state.filename = ""
+
+if st.session_state.done and not st.session_state.edit_mode:
     st.success(st.session_state.message)
     with st.expander("Code", expanded=True):
         code_empty = st.empty()
-        if st.session_state.edit_mode:
-            new_code = code_empty.text_area("", st.session_state.code, height=500)
-            if st.button("Save & Rerun"):
-                st.session_state.code = (
-                    new_code  # Save the edited code to session state
-                )
-                st.session_state.edit_mode = False  # Exit edit mode
-                code_empty.code(new_code)
-                kill()
-                st.session_state["pid"] = runStreamlit(
-                    new_code, openai_api_key, openai_api_base
-                )
-                st.experimental_rerun()
+        code_empty.code(st.session_state.code)
+        
+        if st.button("Edit"):
+            st.session_state.edit_mode = True  # Enter edit mode
+            st.experimental_rerun()
+    
+           # Handle the save file operation
+    if st.button('Save File'):
+        st.session_state.filename = save_code_to_file(st.session_state.code)
+        st.success(f'File saved as {st.session_state.filename}')
 
+    # Before running the file, ensure the filename is set
+    if st.button('Run File'):
+        if not st.session_state.filename:
+            st.error("No file has been saved yet. Please save the file before running.")
         else:
-            code_empty.code(st.session_state.code)
-            if st.button("Edit"):
-                st.session_state.edit_mode = True  # Enter edit mode
-                st.experimental_rerun()
-    example_submitted = False
-    if submitted:
-        st.session_state["pid"] = runStreamlit(code, openai_api_key, openai_api_base)
+            stdout, stderr = run_code_file(st.session_state.filename)
+            if stdout:
+                st.code(stdout, language='bash')
+            if stderr:
+                st.error(stderr)
+            
+            # After running the code, extract the correct IP address and port
+            # Get the local system's hostname
+            hostname = socket.gethostname()
+            # Then retrieve the local IP address
+            ip_address = socket.gethostbyname(hostname)
+            port = "8503"  # Set the correct port that Streamlit runs on
+            
+            # Create the HTML for the link to the running app
+            st.markdown(f'<a href="http://{ip_address}:{port}/" target="_blank">Open the running app</a>', unsafe_allow_html=True)
+      
 
+# Download button logic ...
+st.download_button(
+    label="Download Code",
+    data=st.session_state.code,
+    file_name='generated_code.py',
+    mime='text/plain'
+)
+
+    
 if st.session_state.get("failed", False):
     with st.form("fail"):
         st.warning(st.session_state["message"])

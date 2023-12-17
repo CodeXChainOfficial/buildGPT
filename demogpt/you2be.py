@@ -1,0 +1,130 @@
+import os
+import streamlit as st
+import tempfile
+
+import shutil
+from langchain.document_loaders import *
+
+
+from langchain.chat_models import ChatOpenAI
+from langchain.chains.summarize import load_summarize_chain
+import subprocess
+
+
+from langchain.chains import LLMChain
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts.chat import (
+    ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate)
+
+
+def load_video(youtube_link):
+    loader = YoutubeLoader.from_youtube_url(youtube_link, add_video_info=False)
+    docs = loader.load()
+    return docs
+
+
+def generate_recap(video_doc):
+    llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo-16k",
+                     openai_api_key=openai_api_key)
+    chain = load_summarize_chain(llm, chain_type="stuff")
+    with st.spinner('DemoGPT is working on it. It might take 5-10 seconds...'):
+        return chain.run(video_doc)
+
+
+def codeGeneratorFromVideo(video_string):
+    chat = ChatOpenAI(
+        model="gpt-3.5-turbo-16k",
+        openai_api_key=openai_api_key,
+        temperature=0
+    )
+    system_template = """You are a code generator. Your task is to generate the code that is being used in the video."""
+    system_message_prompt = SystemMessagePromptTemplate.from_template(
+        system_template)
+    human_template = """The video string is: '{video_string}'. Please generate the code that is being used in this video."""
+    human_message_prompt = HumanMessagePromptTemplate.from_template(
+        human_template)
+    chat_prompt = ChatPromptTemplate.from_messages(
+        [system_message_prompt, human_message_prompt]
+    )
+
+    chain = LLMChain(llm=chat, prompt=chat_prompt)
+    result = chain.run(video_string=video_string)
+    return result  # returns string
+
+
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+openai_api_key = st.sidebar.text_input(
+    "OpenAI API Key",
+    placeholder="sk-...",
+    value=os.getenv("OPENAI_API_KEY", ""),
+    type="password",
+)
+
+
+st.sidebar.markdown("""'''
+# How to use
+
+1. Enter your [OpenAI API key](https://platform.openai.com/account/api-keys) above🔑
+2. Provide the YouTube link of the video you want to summarize in the input field.
+3. Wait for the application to load the video as a document.
+4. If the video is about coding, the application will generate the code used in the video.
+5. Once the recap and code (if applicable) are ready, they will be displayed on your screen.
+'''""")
+
+
+st.sidebar.markdown("# About")
+st.sidebar.markdown("Clip & Code Comedy is a unique web application that generates concise recaps of any YouTube video from a provided link. If the video is about coding, the app will also provide the code used. Perfect for quick reviews and learning on the go.")
+
+with st.form(key="form"):
+    st.title('Clip & Code Comedy')
+    youtube_link = st.text_input("Enter YouTube link")
+
+    submit_button = st.form_submit_button(label='Submit')
+    if not openai_api_key.startswith('sk-'):
+        st.warning('Please enter your OpenAI API key!', icon='⚠')
+    if submit_button:
+
+        if youtube_link:
+            video_doc = load_video(youtube_link)
+        else:
+            video_doc = ''
+
+        if not openai_api_key.startswith('sk-'):
+            st.warning('Please enter your OpenAI API key!', icon='⚠')
+            recap_text = ""
+        elif video_doc:
+            recap_text = generate_recap(video_doc)
+        else:
+            variable = ""
+
+        video_string = "".join([doc.page_content for doc in video_doc])
+
+        if not openai_api_key.startswith('sk-'):
+            st.warning('Please enter your OpenAI API key!', icon='⚠')
+            code_text = ""
+        elif (isinstance(video_string, bool) or video_string):
+            with st.spinner('DemoGPT is working on it. It takes less than 10 seconds...'):
+                code_text = codeGeneratorFromVideo(video_string)
+        else:
+            code_text = ""
+
+        st.markdown(code_text)
+
+        filename = 'generated_code.py'
+        with open(filename, 'w') as file:
+              file.write(code_text)
+
+        st.success(f'File {filename} has been saved.')
+
+        command = f'streamlit run {filename}'
+
+        # Run the Streamlit app
+        process = subprocess.Popen(command, shell=True)
+
+        # Give feedback to the user that Streamlit is running. You can also provide the local URL.
+        st.success(f'Running Streamlit app {filename}...')
+
+
